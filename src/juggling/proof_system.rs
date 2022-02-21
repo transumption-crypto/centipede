@@ -27,41 +27,41 @@ use grad_release::SegmentProof;
 use ::Errors::ErrorSegmentProof;
 
 use curv::cryptographic_primitives::hashing::{Digest, DigestExt};
-use curv::elliptic::curves::{secp256_k1::Secp256k1, Point, Scalar};
+use curv::elliptic::curves::{secp256_k1::Secp256k1, Curve, Point, Scalar};
 use sha2::{Sha256, Sha512};
 
 #[derive(Serialize, Deserialize)]
-pub struct Helgamal {
-    pub D: Point<Secp256k1>,
-    pub E: Point<Secp256k1>,
+pub struct Helgamal<E: Curve = Secp256k1> {
+    pub D: Point<E>,
+    pub E: Point<E>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Helgamalsegmented {
-    pub DE: Vec<Helgamal>,
+pub struct Helgamalsegmented<E: Curve = Secp256k1> {
+    pub DE: Vec<Helgamal<E>>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Witness {
-    pub x_vec: Vec<Scalar<Secp256k1>>,
-    pub r_vec: Vec<Scalar<Secp256k1>>,
+pub struct Witness<E: Curve = Secp256k1> {
+    pub x_vec: Vec<Scalar<E>>,
+    pub r_vec: Vec<Scalar<E>>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Proof {
-    pub bulletproof: RangeProof,
-    pub elgamal_enc: Vec<HomoELGamalProof<Secp256k1, Sha256>>,
-    pub elgamal_enc_dlog: HomoELGamalDlogProof<Secp256k1, Sha256>,
+pub struct Proof<E: Curve = Secp256k1> {
+    pub bulletproof: RangeProof<E>,
+    pub elgamal_enc: Vec<HomoELGamalProof<E, Sha256>>,
+    pub elgamal_enc_dlog: HomoELGamalDlogProof<E, Sha256>,
 }
 
-impl Proof {
+impl<E> Proof<E> where E: Curve {
     pub fn prove(
-        w: &Witness,
-        c: &Helgamalsegmented,
-        G: &Point<Secp256k1>,
-        Y: &Point<Secp256k1>,
+        w: &Witness<E>,
+        c: &Helgamalsegmented<E>,
+        G: &Point<E>,
+        Y: &Point<E>,
         segment_size: &usize,
-    ) -> Proof {
+    ) -> Self {
         // bulletproofs:
         let num_segments = w.x_vec.len();
         // bit range
@@ -77,7 +77,7 @@ impl Proof {
             .map(|i| {
                 let kzen_label_i = BigInt::from(i as u32) + &kzen_label;
                 let hash_i = Sha512::new().chain_bigint(&kzen_label_i).result_bigint();
-                generate_random_point(&Converter::to_bytes(&hash_i))
+                generate_random_point::<E>(&Converter::to_bytes(&hash_i))
             })
             .collect::<Vec<_>>();
 
@@ -86,11 +86,11 @@ impl Proof {
             .map(|i| {
                 let kzen_label_j = BigInt::from(n as u32) + BigInt::from(i as u32) + &kzen_label;
                 let hash_j = Sha512::new().chain_bigint(&kzen_label_j).result_bigint();
-                generate_random_point(&Converter::to_bytes(&hash_j))
+                generate_random_point::<E>(&Converter::to_bytes(&hash_j))
             })
             .collect::<Vec<_>>();
 
-        let range_proof = RangeProof::prove(&g_vec, &h_vec, G, Y, w.x_vec.clone(), &w.r_vec, n);
+        let range_proof = RangeProof::<E>::prove(&g_vec, &h_vec, G, Y, w.x_vec.clone(), &w.r_vec, n);
 
         // proofs of correct elgamal:
 
@@ -109,15 +109,15 @@ impl Proof {
                 };
                 HomoELGamalProof::prove(&w, &delta)
             })
-            .collect::<Vec<HomoELGamalProof<Secp256k1, Sha256>>>();
+            .collect::<Vec<HomoELGamalProof<E, Sha256>>>();
 
         // proof of correct ElGamal DLog
-        let D_vec: Vec<Point<Secp256k1>> = (0..num_segments).map(|i| c.DE[i].D.clone()).collect();
-        let E_vec: Vec<Point<Secp256k1>> = (0..num_segments).map(|i| c.DE[i].E.clone()).collect();
-        let sum_D = Msegmentation::assemble_ge(&D_vec, segment_size);
-        let sum_E = Msegmentation::assemble_ge(&E_vec, segment_size);
-        let sum_r = Msegmentation::assemble_fe(&w.r_vec, segment_size);
-        let sum_x = Msegmentation::assemble_fe(&w.x_vec, segment_size);
+        let D_vec: Vec<Point<E>> = (0..num_segments).map(|i| c.DE[i].D.clone()).collect();
+        let E_vec: Vec<Point<E>> = (0..num_segments).map(|i| c.DE[i].E.clone()).collect();
+        let sum_D = Msegmentation::<E>::assemble_ge(&D_vec, segment_size);
+        let sum_E = Msegmentation::<E>::assemble_ge(&E_vec, segment_size);
+        let sum_r = Msegmentation::<E>::assemble_fe(&w.r_vec, segment_size);
+        let sum_x = Msegmentation::<E>::assemble_fe(&w.x_vec, segment_size);
         let Q = G.clone() * &sum_x;
         let delta = HomoElGamalDlogStatement {
             G: G.clone(),
@@ -129,7 +129,7 @@ impl Proof {
         let w = HomoElGamalDlogWitness { r: sum_r, x: sum_x };
         let elgamal_dlog_proof = HomoELGamalDlogProof::prove(&w, &delta);
 
-        Proof {
+        Self     {
             bulletproof: range_proof,
             elgamal_enc: elgamal_proofs,
             elgamal_enc_dlog: elgamal_dlog_proof,
@@ -138,10 +138,10 @@ impl Proof {
 
     pub fn verify(
         &self,
-        c: &Helgamalsegmented,
-        G: &Point<Secp256k1>,
-        Y: &Point<Secp256k1>,
-        Q: &Point<Secp256k1>,
+        c: &Helgamalsegmented<E>,
+        G: &Point<E>,
+        Y: &Point<E>,
+        Q: &Point<E>,
         segment_size: &usize,
     ) -> Result<(), Errors> {
         // bulletproofs:
@@ -159,20 +159,20 @@ impl Proof {
             .map(|i| {
                 let kzen_label_i = BigInt::from(i as u32) + &kzen_label;
                 let hash_i = Sha512::new().chain_bigint(&kzen_label_i).result_bigint();
-                generate_random_point(&Converter::to_bytes(&hash_i))
+                generate_random_point::<E>(&Converter::to_bytes(&hash_i))
             })
-            .collect::<Vec<Point<Secp256k1>>>();
+            .collect::<Vec<Point<E>>>();
 
         // can run in parallel to g_vec:
         let h_vec = (0..nm)
             .map(|i| {
                 let kzen_label_j = BigInt::from(n as u32) + BigInt::from(i as u32) + &kzen_label;
                 let hash_j = Sha512::new().chain_bigint(&kzen_label_j).result_bigint();
-                generate_random_point(&Converter::to_bytes(&hash_j))
+                generate_random_point::<E>(&Converter::to_bytes(&hash_j))
             })
-            .collect::<Vec<Point<Secp256k1>>>();
+            .collect::<Vec<Point<E>>>();
 
-        let D_vec: Vec<Point<Secp256k1>> = (0..num_segments).map(|i| c.DE[i].D.clone()).collect();
+        let D_vec: Vec<Point<E>> = (0..num_segments).map(|i| c.DE[i].D.clone()).collect();
         let bp_ver = self
             .bulletproof
             .verify(&g_vec, &h_vec, G, Y, &D_vec, *segment_size)
@@ -191,9 +191,9 @@ impl Proof {
             })
             .collect::<Vec<bool>>();
 
-        let E_vec: Vec<Point<Secp256k1>> = (0..num_segments).map(|i| c.DE[i].E.clone()).collect();
-        let sum_D = Msegmentation::assemble_ge(&D_vec, segment_size);
-        let sum_E = Msegmentation::assemble_ge(&E_vec, segment_size);
+        let E_vec: Vec<Point<E>> = (0..num_segments).map(|i| c.DE[i].E.clone()).collect();
+        let sum_D = Msegmentation::<E>::assemble_ge(&D_vec, segment_size);
+        let sum_E = Msegmentation::<E>::assemble_ge(&E_vec, segment_size);
 
         let delta = HomoElGamalDlogStatement {
             G: G.clone(),
@@ -212,8 +212,8 @@ impl Proof {
     }
 
     pub fn verify_first_message(
-        first_message: &FirstMessage,
-        encryption_key: &Point<Secp256k1>,
+        first_message: &FirstMessage<E>,
+        encryption_key: &Point<E>,
     ) -> Result<(), Errors> {
         // bulletproofs:
         let num_segments = first_message.D_vec.len();
@@ -230,9 +230,9 @@ impl Proof {
             .map(|i| {
                 let kzen_label_i = BigInt::from(i as u32) + &kzen_label;
                 let hash_i = Sha512::new().chain_bigint(&kzen_label_i).result_bigint();
-                generate_random_point(&Converter::to_bytes(&hash_i))
+                generate_random_point::<E>(&Converter::to_bytes(&hash_i))
             })
-            .collect::<Vec<Point<Secp256k1>>>();
+            .collect::<Vec<Point<E>>>();
 
         let Y = encryption_key.clone();
         // can run in parallel to g_vec:
@@ -240,11 +240,11 @@ impl Proof {
             .map(|i| {
                 let kzen_label_j = BigInt::from(n as u32) + BigInt::from(i as u32) + &kzen_label;
                 let hash_j = Sha512::new().chain_bigint(&kzen_label_j).result_bigint();
-                generate_random_point(&Converter::to_bytes(&hash_j))
+                generate_random_point::<E>(&Converter::to_bytes(&hash_j))
             })
-            .collect::<Vec<Point<Secp256k1>>>();
+            .collect::<Vec<Point<E>>>();
 
-        let D_vec: Vec<Point<Secp256k1>> = (0..num_segments)
+        let D_vec: Vec<Point<E>> = (0..num_segments)
             .map(|i| first_message.D_vec[i].clone())
             .collect();
         let bp_ver = first_message
@@ -252,18 +252,18 @@ impl Proof {
             .verify(
                 &g_vec,
                 &h_vec,
-                &Point::<Secp256k1>::generator(),
+                &Point::<E>::generator(),
                 &Y,
                 &first_message.D_vec,
                 first_message.segment_size,
             )
             .is_ok();
 
-        let sum_D = Msegmentation::assemble_ge(&D_vec, &first_message.segment_size);
+        let sum_D = Msegmentation::<E>::assemble_ge(&D_vec, &first_message.segment_size);
         let sum_E = first_message.E.clone();
 
         let delta = HomoElGamalDlogStatement {
-            G: Point::<Secp256k1>::generator().to_point(),
+            G: Point::<E>::generator().to_point(),
             Y,
             Q: first_message.Q.clone(),
             D: sum_D,
@@ -279,13 +279,13 @@ impl Proof {
     }
 
     pub fn verify_segment(
-        first_message: &FirstMessage,
-        segment: &SegmentProof,
-        encryption_key: &Point<Secp256k1>,
+        first_message: &FirstMessage<E>,
+        segment: &SegmentProof<E>,
+        encryption_key: &Point<E>,
     ) -> Result<(), Errors> {
         let delta = HomoElGamalStatement {
-            G: Point::<Secp256k1>::generator().to_point(),
-            H: Point::<Secp256k1>::generator().to_point(),
+            G: Point::<E>::generator().to_point(),
+            H: Point::<E>::generator().to_point(),
             Y: encryption_key.clone(),
             D: first_message.D_vec[segment.k].clone(),
             E: segment.E_k.clone(),

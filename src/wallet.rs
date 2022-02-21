@@ -16,32 +16,33 @@ version 3 of the License, or (at your option) any later version.
 */
 
 use curv::arithmetic::traits::*;
-use curv::elliptic::curves::secp256_k1::hash_to_curve::generate_random_point;
 use curv::BigInt;
 
+use bulletproof::proofs::range_proof::generate_random_point;
+
 use curv::cryptographic_primitives::hashing::{Digest, DigestExt};
-use curv::elliptic::curves::{secp256_k1::Secp256k1, Point, Scalar};
+use curv::elliptic::curves::{secp256_k1::Secp256k1, Curve, Point, Scalar};
 use sha2::Sha256;
 
-pub struct SecretShare {
-    pub secret: Scalar<Secp256k1>,
-    pub pubkey: Point<Secp256k1>,
+pub struct SecretShare<E: Curve = Secp256k1> {
+    pub secret: Scalar<E>,
+    pub pubkey: Point<E>,
 }
 
-impl SecretShare {
-    pub fn generate() -> SecretShare {
-        let base_point = Point::<Secp256k1>::generator();
-        let secret: Scalar<Secp256k1> = Scalar::<Secp256k1>::random();
+impl<E> SecretShare<E> where E: Curve {
+    pub fn generate() -> Self {
+        let base_point = Point::<E>::generator();
+        let secret: Scalar<E> = Scalar::<E>::random();
 
         let pubkey = base_point * &secret;
-        SecretShare { secret, pubkey }
+        Self { secret, pubkey }
     }
     //based on VRF construction from elliptic curve: https://eprint.iacr.org/2017/099.pdf
     //TODO: consider to output in str format
     pub fn generate_randomness(&self, label: &BigInt) -> BigInt {
-        let h = generate_random_point(&Converter::to_bytes(label));
+        let h = generate_random_point::<E>(&Converter::to_bytes(label));
         let gamma = h * &self.secret;
-        let beta: Scalar<Secp256k1> = Sha256::new().chain_points([&gamma]).result_scalar();
+        let beta: Scalar<E> = Sha256::new().chain_points([&gamma]).result_scalar();
         beta.to_bigint()
     }
 }
